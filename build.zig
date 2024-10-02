@@ -121,6 +121,7 @@ pub fn build(b: *std.Build) !void {
             .target = target,
             .optimize = optimize,
         });
+        exe.linkLibC();
         // Add dependency modules to the executable.
         for (deps) |mod| exe.root_module.addImport(
             mod.name,
@@ -151,6 +152,7 @@ pub fn build(b: *std.Build) !void {
             .target = target,
             .optimize = optimize,
         });
+        exe_check.linkLibC();
         // Add dependency modules to the executable.
         for (deps) |mod| exe_check.root_module.addImport(
             mod.name,
@@ -176,6 +178,7 @@ pub fn build(b: *std.Build) !void {
         .root_source_file = b.path("src/lib.zig"),
         .target = target,
     });
+    lib_unit_tests.linkLibC();
 
     // Add dependency modules to the library.
     for (deps) |mod| lib_unit_tests.root_module.addImport(
@@ -207,6 +210,7 @@ pub fn build(b: *std.Build) !void {
         .target = target,
         .optimize = .ReleaseFast,
     });
+    bench.linkLibC();
 
     bench.root_module.addImport("zul", b.dependency("zul", .{}).module("zul"));
 

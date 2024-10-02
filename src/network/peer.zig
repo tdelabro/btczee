@@ -3,6 +3,7 @@ const net = std.net;
 const protocol = @import("./protocol/lib.zig");
 const wire = @import("./wire/lib.zig");
 const Config = @import("../config/config.zig").Config;
+const utils = @import("./utils.zig");
 
 pub const Boundness = enum {
     inbound,
@@ -28,12 +29,29 @@ pub const Peer = struct {
     boundness: Boundness,
     should_listen: bool = false,
 
-    /// Initialize a new peer
-    pub fn init(allocator: std.mem.Allocator, config: *const Config, address: std.net.Address, boundness: Boundness) !*Peer {
-        const stream = try std.net.tcpConnectToAddress(address);
-        const peer = try allocator.create(Peer);
+    const Self = @This();
 
-        peer.* = .{
+    pub fn newOutbound(allocator: std.mem.Allocator, config: *const Config, address: net.Address) !*Self {
+        const peer = try allocator.create(Self);
+        errdefer allocator.destroy(peer);
+        const stream = try utils.tcpConnectToAddressNonBlocking(address);
+
+        peer.init(allocator, config, stream, address, Boundness.outbound);
+
+        return peer;
+    }
+
+    pub fn newInbound(allocator: std.mem.Allocator, config: *const Config, conn: net.Server.Connection) !*Self {
+        const peer = try allocator.create(Self);
+
+        peer.init(allocator, config, conn.stream, conn.address, Boundness.inbound);
+
+        return peer;
+    }
+
+    /// Initialize a new peer
+    fn init(self: *Self, allocator: std.mem.Allocator, config: *const Config, stream: net.Stream, address: net.Address, boundness: Boundness) void {
+        self.* = .{
             .allocator = allocator,
             .config = config,
             .stream = stream,
@@ -41,17 +59,16 @@ pub const Peer = struct {
             .last_seen = std.time.timestamp(),
             .boundness = boundness,
         };
-        return peer;
     }
 
     /// Clean up peer resources
-    pub fn deinit(self: *Peer) void {
+    pub fn deinit(self: *Self) void {
         self.stream.close();
         self.allocator.destroy(self);
     }
 
     /// Start peer operations
-    pub fn handshake(self: *Peer) !void {
+    pub fn handshake(self: *Self) !void {
         std.log.info("Starting peer connection with {}", .{self.address});
         if (self.boundness.isOutbound()) {
             try self.negociateProtocolOutboundConnection();
@@ -64,32 +81,29 @@ pub const Peer = struct {
         std.log.info("Connected to {}", .{self.address});
     }
 
-    fn negociateProtocolOutboundConnection(self: *Peer) !void {
+    fn negociateProtocolOutboundConnection(self: *Self) !void {
         try self.sendVersionMessage();
 
+        var seen_version = false;
         while (true) {
-            const received_message = wire.receiveMessage(self.allocator, self.stream.reader(), self.config.network_id) catch |e| {
-                switch (e) {
-                    // The node can be on another version of the protocol, using messages we are not aware of
-                    error.UnknownMessage => continue,
-                    else => return e,
-                }
-            } orelse continue;
+            const received_message = try wire.pollMessage(self.allocator, self.stream.reader(), self.config.network_id) orelse continue;
 
             switch (received_message) {
                 .version => |vm| {
-                    self.protocol_version = @min(self.config.protocol_version, vm.version);
-                    self.services = vm.trans_services;
+                    if (seen_version) return error.InvalidHandshake else {
+                        self.protocol_version = @min(self.config.protocol_version, vm.version);
+                        self.services = vm.trans_services;
+                        seen_version = true;
+                    }
                 },
-
-                .verack => return,
+                .verack => return if (seen_version) {} else error.InvalidHandshake,
                 else => return error.InvalidHandshake,
             }
         }
     }
 
     /// Send version message to peer
-    fn sendVersionMessage(self: *Peer) !void {
+    fn sendVersionMessage(self: *Self) !void {
         const message = protocol.messages.VersionMessage.new(
             self.config.protocol_version,
             .{ .ip = std.mem.zeroes([16]u8), .port = 0, .services = self.config.services },
@@ -107,27 +121,27 @@ pub const Peer = struct {
         );
     }
 
-    pub fn listen(self: *Peer) void {
-        std.log.info("Listening for messages from {any}", .{self.address});
-        while (self.should_listen) {
-            const message = wire.receiveMessage(self.allocator, self.stream.reader(), self.config.network_id) catch |e| switch (e) {
-                // The node can be on another version of the protocol, using messages we are not aware of
-                error.UnknownMessage => continue,
-                else => {
-                    self.should_listen = false;
-                    continue;
-                },
-            } orelse continue;
-
+    /// Listen and handle new messages
+    pub fn listen(self: *Self, pool: *std.Thread.Pool) void {
+        const opt_message = wire.pollMessage(self.allocator, self.stream.reader(), self.config.network_id) catch {
+            self.should_listen = false;
+            return;
+        };
+        if (opt_message) |message| {
             switch (message) {
                 // We only received those during handshake, seeing them again is an error
-                .version, .verack => self.should_listen = false,
+                .version, .verack => {
+                    self.should_listen = false;
+                    return;
+                },
                 // TODO: handle other messages correctly
-                else => |m| {
-                    std.log.info("Peer {any} sent a `{s}` message", .{ self.address, m.name() });
-                    continue;
+                else => |_| {
+                    std.log.info("Self {any} sent a `{s}` message", .{ self.address, message.name() });
                 },
             }
         }
+
+        // Continue listening
+        pool.spawn(Peer.listen, .{ self, pool }) catch {};
     }
 };

@@ -71,10 +71,8 @@ pub fn sendMessage(allocator: std.mem.Allocator, w: anytype, protocol_version: i
 
 pub const ReceiveMessageError = error{ UnknownMessage, InvaliPayloadLen, InvalidChecksum, InvalidHandshake, InvalidNetwork };
 
-/// Read a message from the wire.
-///
-/// Will fail if the header content does not match the payload.
-pub fn receiveMessage(
+/// Try to read a message from the wire.
+pub fn pollMessage(
     allocator: std.mem.Allocator,
     r: anytype,
     our_network: [4]u8,
@@ -141,7 +139,7 @@ fn write_and_read_message(allocator: std.mem.Allocator, list: *std.ArrayList(u8)
     var fbs: std.io.FixedBufferStream([]u8) = std.io.fixedBufferStream(list.items);
     const reader = fbs.reader();
 
-    return receiveMessage(allocator, reader, network_id);
+    return pollMessage(allocator, reader, network_id);
 }
 
 test "ok_send_version_message" {
@@ -366,7 +364,7 @@ test "ko_receive_invalid_payload_length" {
     var fbs: std.io.FixedBufferStream([]u8) = std.io.fixedBufferStream(list.items);
     const reader = fbs.reader();
 
-    try std.testing.expectError(error.InvaliPayloadLen, receiveMessage(test_allocator, reader, network_id));
+    try std.testing.expectError(error.InvaliPayloadLen, pollMessage(test_allocator, reader, network_id));
 }
 
 test "ko_receive_invalid_checksum" {
@@ -406,7 +404,7 @@ test "ko_receive_invalid_checksum" {
     var fbs: std.io.FixedBufferStream([]u8) = std.io.fixedBufferStream(list.items);
     const reader = fbs.reader();
 
-    try std.testing.expectError(error.InvalidChecksum, receiveMessage(test_allocator, reader, network_id));
+    try std.testing.expectError(error.InvalidChecksum, pollMessage(test_allocator, reader, network_id));
 }
 
 test "ko_receive_invalid_command" {
@@ -446,5 +444,5 @@ test "ko_receive_invalid_command" {
     var fbs: std.io.FixedBufferStream([]u8) = std.io.fixedBufferStream(list.items);
     const reader = fbs.reader();
 
-    try std.testing.expectError(error.UnknownMessage, receiveMessage(test_allocator, reader, network_id));
+    try std.testing.expectError(error.UnknownMessage, pollMessage(test_allocator, reader, network_id));
 }
